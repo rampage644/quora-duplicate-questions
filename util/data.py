@@ -8,8 +8,4 @@ import spacy
 
 
 def load_data(path):
-    return pd.read_csv(path)[['question1', 'question2', 'is_duplicate']]
-
-
-def load_test_data(path):
     return pd.read_csv(path)
