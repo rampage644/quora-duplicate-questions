@@ -14,6 +14,8 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.model_selection import GridSearchCV
 from sklearn.svm import SVC
+import xgboost as xgb
+
 
 import models.simple
 import util.data
@@ -74,18 +76,20 @@ def main():
             prefix, score, loss, accuracy
         ))
 
-    model = SGDClassifier(loss='log', n_iter=1, n_jobs=-1, alpha=0.001)
+    # model = SGDClassifier(loss='log', n_iter=1, n_jobs=-1, alpha=0.001)
+    model = RandomForestClassifier(n_jobs=-1, n_estimators=50, max_features=150)
 
     t0 = time.time()
     if args.search:
         parameters = {
             # 'penalty': ['l1', 'l2'],
             # 'C': [1e-3, 1e-2, 1e-1, 1, 1e1, 1e2, 1e3]
-            # 'n_estimators': [50, 100, 200, 300, 500],
-            'loss': ['log', 'modified_huber'],
-            'penalty': ['l2', 'l1', 'elasticnet'],
-            'alpha': np.logspace(-6, 6, 13),
-            'n_iter': [1, 3, 5, 10]
+            # 'n_estimators': [10, 30, 50, 100, 200, 300, 500],
+            'max_features': [150, 200]
+            # 'loss': ['log', 'modified_huber'],
+            # 'penalty': ['l2', 'l1', 'elasticnet'],
+            # 'alpha': np.logspace(-6, 6, 13),
+            # 'n_iter': [1, 3, 5, 10]
         }
 
         grid_search = GridSearchCV(model, parameters, n_jobs=-1, verbose=1)

@@ -83,7 +83,7 @@ def preprocess_lsi(X, transformer):
     X.question2 = X.question2.apply(str)
 
     vectorizer = TfidfVectorizer(min_df=1, stop_words='english', tokenizer=tokenize)
-    svd_model = TruncatedSVD(n_components=500, algorithm='randomized', n_iter=5)
+    svd_model = TruncatedSVD(n_components=100, algorithm='randomized', n_iter=5)
     svd_transformer = Pipeline([('tfidf', vectorizer),
                                 ('svd', svd_model)])
 
@@ -95,14 +95,14 @@ def preprocess_lsi(X, transformer):
     x1, x2 = transformer.transform(X.question1), transformer.transform(X.question2)
     # Memory inefficient
     # X['cosine_distance'] = np.diag(cosine_similarity(x1, x2))
-    cosine = lambda x, y: x.T.dot(y) / norm(x) / norm(y)
-    X['cosine_distance'] = np.array([cosine(x, y) if x.sum() and y.sum() else 0.0 for x, y in zip(x1, x2)])
-    X['l2_distance'] = np.linalg.norm(x1 - x2, axis=1)
-    X['l1_distance'] = np.abs(x1 - x2).sum(axis=1)
+    # cosine = lambda x, y: x.T.dot(y) / norm(x) / norm(y)
+    # X['cosine_distance'] = np.array([cosine(x, y) if x.sum() and y.sum() else 0.0 for x, y in zip(x1, x2)])
+    # X['l2_distance'] = np.linalg.norm(x1 - x2, axis=1)
+    # X['l1_distance'] = np.abs(x1 - x2).sum(axis=1)
 
     del X['question1']
     del X['question2']
-    ret = pd.DataFrame(x1-x2)
+    ret = pd.DataFrame(np.concatenate([np.abs(x1 - x2), np.sqrt((x1-x2) ** 2),  x1 * x2], axis=1))
     try:
         ret['is_duplicate'] = X.is_duplicate
     except AttributeError:
