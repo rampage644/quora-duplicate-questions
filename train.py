@@ -151,7 +151,8 @@ def converter(batch, device):
 
 class SimpleModel(chainer.Chain):
     INPUT_DIM = 300
-    def __init__(self, vocab_size, lstm_units, dense_units, lstm_dropout=0.0, dense_dropout=0.0):
+    def __init__(self, vocab_size, lstm_units, dense_units, lstm_dropout,
+                 dense_dropout, aux_feats_num, aux_feats_units, aux_dropout):
         super().__init__(
             q_embed=L.LSTM(self.INPUT_DIM, lstm_units),
             fc1=L.Linear(3 * lstm_units, dense_units),
@@ -162,13 +163,21 @@ class SimpleModel(chainer.Chain):
             bn2=L.BatchNormalization(dense_units),
             bn3=L.BatchNormalization(dense_units),
             bn4=L.BatchNormalization(dense_units),
+            aux_fc1=L.Linear(aux_feats_num, aux_feats_units),
+            aux_fc2=L.Linear(aux_feats_units, aux_feats_units),
+            aux_fc3=L.Linear(aux_feats_units, aux_feats_units),
+            aux_bn1=L.BatchNormalization(aux_feats_num),
+            aux_bn2=L.BatchNormalization(aux_feats_units),
+            aux_bn3=L.BatchNormalization(aux_feats_units),
+            merge_fc1=L.Linear(dense_units + aux_feats_units, 2)
         )
         self.embed = L.EmbedID(vocab_size, self.INPUT_DIM)
         self.lstm_dropout = lstm_dropout
         self.dense_dropout = dense_dropout
+        self.aux_dropout = aux_dropout
         self.train = True
 
-    def __call__(self, x1, x2):
+    def __call__(self, x1, x2, feats):
         x1 = self.embed(x1)
         x2 = self.embed(x2)
 
@@ -189,9 +198,14 @@ class SimpleModel(chainer.Chain):
         x = F.relu(self.fc1(F.dropout(self.bn1(x, not self.train), self.dense_dropout, self.train)))
         x = F.relu(self.fc2(F.dropout(self.bn2(x, not self.train), self.dense_dropout, self.train)))
         x = F.relu(self.fc3(F.dropout(self.bn3(x, not self.train), self.dense_dropout, self.train)))
-        x = self.fc4(F.dropout(self.bn4(x, not self.train), self.dense_dropout, self.train))
+        # x = self.fc4(F.dropout(self.bn4(x, not self.train), self.dense_dropout, self.train))
 
-        return x
+        aux_feats = F.relu(self.aux_fc1(F.dropout(self.aux_bn1(feats, not self.train), self.aux_dropout, self.train)))
+        aux_feats = F.relu(self.aux_fc2(F.dropout(self.aux_bn2(aux_feats, not self.train), self.aux_dropout, self.train)))
+        aux_feats = F.relu(self.aux_fc3(F.dropout(self.aux_bn3(aux_feats, not self.train), self.aux_dropout, self.train)))
+
+        merge = self.merge_fc1(F.concat([x, aux_feats], axis=1))
+        return merge
 
 class PandasWrapper(DatasetMixin):
     def __init__(self, df):
@@ -201,7 +215,7 @@ class PandasWrapper(DatasetMixin):
         return len(self.df)
 
     def get_example(self, i):
-        return self.df.iloc[i].astype('float32')
+        return self.df.iloc[i].values
 
 
 def parse_args():
@@ -216,8 +230,11 @@ def parse_args():
     parser.add_argument('--epoch', '-e', type=int, default=10)
     parser.add_argument('--lstm',  type=int, default=150)
     parser.add_argument('--dense',  type=int, default=100)
+    parser.add_argument('--aux_feats_num',  type=int, default=28)
+    parser.add_argument('--aux_feats_units',  type=int, default=100)
     parser.add_argument('--lstm_dropout',  type=float, default=0.15)
     parser.add_argument('--dense_dropout',  type=float, default=0.15)
+    parser.add_argument('--aux_dropout',  type=int, default=0.15)
     parser.add_argument('--weight_decay',  type=float, default=1e-4)
     parser.add_argument('--desc',  type=str)
     parser.add_argument('--submit', action='store_true')
@@ -227,6 +244,37 @@ def parse_args():
 
     return parser.parse_args()
 
+float_cols = ['len_q1',
+ 'len_q2',
+ 'diff_len',
+ 'len_char_q1',
+ 'len_char_q2',
+ 'len_word_q1',
+ 'len_word_q2',
+ 'common_words',
+ 'fuzz_qratio',
+ 'fuzz_WRatio',
+ 'fuzz_partial_ratio',
+ 'fuzz_partial_token_set_ratio',
+ 'fuzz_partial_token_sort_ratio',
+ 'fuzz_token_set_ratio',
+ 'fuzz_token_sort_ratio',
+ 'wmd',
+ 'norm_wmd',
+ 'cosine_distance',
+ 'cityblock_distance',
+ 'jaccard_distance',
+ 'canberra_distance',
+ 'euclidean_distance',
+ 'minkowski_distance',
+ 'braycurtis_distance',
+ 'skew_q1vec',
+ 'skew_q2vec',
+ 'kur_q1vec',
+ 'kur_q2vec'
+]
+float32_cols = {c: np.float32 for c in float_cols}
+
 
 def main():
     args = parse_args()
@@ -234,16 +282,17 @@ def main():
     out_dir = os.path.join(args.out, datetime.datetime.now().strftime('%m-%d-%H-%M'))
 
     data = pd.read_csv(args.train)
-    # feats_ds = PandasWrapper(pd.read_csv('data/train_features.csv', encoding='latin1'))
-    # feats_ds.df.drop(['question1', 'question2'], inplace=True, axis=1)
-    # data = pd.read_csv(args.train)
+    feats_ds = pd.read_csv('data/train_features.csv', encoding='latin1', dtype=float32_cols)
+    feats_ds.drop(['question1', 'question2'], inplace=True, axis=1)
+    feats = feats_ds.values
     q1, q2, tokenizer = vectorize(data)
     labels = data.is_duplicate.values.astype('int32')
 
     embeddings = embedding_matrix(args.embeddings, tokenizer.word_index)
 
     model = L.Classifier(SimpleModel(
-        len(embeddings), args.lstm, args.dense, args.lstm_dropout, args.dense_dropout))
+        len(embeddings), args.lstm, args.dense, args.lstm_dropout, args.dense_dropout,
+        args.aux_feats_num, args.aux_feats_units, args.aux_dropout))
     model.predictor.embed.W.data = embeddings
 
     if args.gpu >= 0:
@@ -253,6 +302,9 @@ def main():
 
     if args.submit:
         test = pd.read_csv(args.test)
+        feats_ds = pd.read_csv('data/test_features.csv', encoding='latin1', dtype=float32_cols)
+        feats_ds.drop(['question1', 'question2'], inplace=True, axis=1)
+        feats = feats_ds.values
         q1, q2, _ = vectorize_with(tokenizer, test)
         chainer.serializers.load_npz(args.model, model.predictor)
         model.predictor.train = False
@@ -261,8 +313,9 @@ def main():
         for pos in tqdm.tqdm(range(0, len(q1), args.batch)):
             bq1 = chainer.cuda.to_gpu(q1[pos:pos+args.batch], device=args.gpu)
             bq2 = chainer.cuda.to_gpu(q2[pos:pos+args.batch], device=args.gpu)
+            aux_feat = chainer.cuda.to_gpu(feats[pos:pos+args.batch], device=args.gpu)
 
-            preds = F.softmax(model.predictor(bq1, bq2))[:, 1].data.get()
+            preds = F.softmax(model.predictor(bq1, bq2, aux_feat))[:, 1].data.get()
             a, b = 0.165 / 0.37, (1 - 0.165) / (1 - 0.37)
             predicted[pos:pos+args.batch] = preds if not args.reweight else  a*preds / (a*preds + b*(1-preds))
 
@@ -275,7 +328,7 @@ def main():
     optimizer.setup(model)
     optimizer.add_hook(chainer.optimizer.WeightDecay(args.weight_decay))
 
-    dataset = chainer.datasets.TupleDataset(q1, q2, labels)
+    dataset = chainer.datasets.TupleDataset(q1, q2, feats, labels)
     train, test = chainer.datasets.split_dataset_random(dataset, int(len(labels) * 0.9), seed=SEED)
 
     train_iter = chainer.iterators.SerialIterator(train, args.batch)
@@ -325,8 +378,12 @@ import pandas as pd
 import chainer
 from chainer.dataset import convert, DatasetMixin
 
-data = pd.read_csv('data/train_features.csv', encoding='latin1')
+data = pd.read_csv('data/train_features.csv', encoding='latin1', nrows=10000, dtype=float32_cols)
+float_cols = [c for c in data if data[c].dtype != "object"]
+data.info()
 data.head()
+
+np_data.i
 
 data.drop(['question1', 'question2'], inplace=True, axis=1)
 
@@ -343,6 +400,6 @@ class PandasWrapper(DatasetMixin):
 
 ds = PandasWrapper(data)
 
-it = chainer.iterators.SerialIterator(ds, 16)
-convert.concat_examples(next(it))
+it = chainer.iterators.SerialIterator(data.values, 1024)
+convert.concat_examples(next(it)).shape
 
