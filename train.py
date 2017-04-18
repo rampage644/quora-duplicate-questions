@@ -1,11 +1,13 @@
 from __future__ import (absolute_import, division, print_function, unicode_literals)
 
 import argparse
+import json
 import os
 import sys
 import gc
 import numpy as np
 import pandas as pd
+import datetime
 
 import tqdm
 
@@ -151,21 +153,15 @@ class SimpleModel(chainer.Chain):
     INPUT_DIM = 300
     def __init__(self, vocab_size, lstm_units, dense_units, lstm_dropout=0.0, dense_dropout=0.0):
         super().__init__(
-            f1_embedding=L.LSTM(self.INPUT_DIM, lstm_units),
-            b_embedding=L.LSTM(self.INPUT_DIM, lstm_units),
-            # b_embedding=L.LSTM(self.INPUT_DIM, lstm_units),
+            q_embed=L.LSTM(self.INPUT_DIM, lstm_units),
             fc1=L.Linear(3 * lstm_units, dense_units),
-            # fc1=L.Linear(4 * lstm_units, dense_units),
             fc2=L.Linear(dense_units, dense_units),
             fc3=L.Linear(dense_units, dense_units),
             fc4=L.Linear(dense_units, 2),
-            # bn1=L.BatchNormalization(4 * lstm_units),
             bn1=L.BatchNormalization(3 * lstm_units),
             bn2=L.BatchNormalization(dense_units),
             bn3=L.BatchNormalization(dense_units),
             bn4=L.BatchNormalization(dense_units),
-            fc_feat1=L.Linear(28, 10),
-            fc_feat2=L.Linear(10, 2),
         )
         self.embed = L.EmbedID(vocab_size, self.INPUT_DIM)
         self.lstm_dropout = lstm_dropout
@@ -176,24 +172,16 @@ class SimpleModel(chainer.Chain):
         x1 = self.embed(x1)
         x2 = self.embed(x2)
 
-        self.f1_embedding.reset_state()
-        # self.b_embedding.reset_state()
+        self.q_embed.reset_state()
         seq_length = x1.shape[1]
         q1_f = q1_b = q2_f = q2_b = None
         for step in range(seq_length):
-            q1_f = F.dropout(self.f1_embedding(x1[:, step, :]), self.lstm_dropout, self.train)
-            # q1_f = F.dropout(self.f1_embedding(x1[:, step, :]), self.lstm_dropout, self.train)
-            # q1_b = F.dropout(self.b_embedding(x1[:, seq_length - step - 1, :]), self.lstm_dropout, self.train)
+            q1_f = F.dropout(self.q_embed(x1[:, step, :]), self.lstm_dropout, self.train)
 
-        # self.b_embedding.reset_state()
-        self.f1_embedding.reset_state()
+        self.q_embed.reset_state()
         for step in range(seq_length):
-            q2_f = F.dropout(self.f1_embedding(x2[:, step, :]), self.lstm_dropout, self.train)
-            # q2_b = F.dropout(self.b_embedding(x2[:, seq_length - step - 1, :]), self.lstm_dropout, self.train)
-            # q2_b = self.b_embedding(x2[:, seq_length - step - 1, :])
+            q2_f = F.dropout(self.q_embed(x2[:, step, :]), self.lstm_dropout, self.train)
 
-        # consider other matching technique: such as max pool, sum, avg, attention
-        # x = F.concat([q1_f, q2_f, q1_b, q2_b], axis=1)
         x = F.concat([
             F.absolute(q1_f - q2_f),
             F.normalize(q1_f - q2_f),
@@ -230,6 +218,8 @@ def parse_args():
     parser.add_argument('--dense',  type=int, default=100)
     parser.add_argument('--lstm_dropout',  type=float, default=0.15)
     parser.add_argument('--dense_dropout',  type=float, default=0.15)
+    parser.add_argument('--weight_decay',  type=float, default=1e-4)
+    parser.add_argument('--desc',  type=str)
     parser.add_argument('--submit', action='store_true')
     parser.add_argument('--reweight', action='store_true')
     parser.add_argument('--submission', type=str, default='submission.gz')
@@ -241,7 +231,7 @@ def parse_args():
 def main():
     args = parse_args()
     np.random.seed(SEED)
-
+    out_dir = os.path.join(args.out, datetime.datetime.now().strftime('%m-%d-%H-%M'))
 
     data = pd.read_csv(args.train)
     # feats_ds = PandasWrapper(pd.read_csv('data/train_features.csv', encoding='latin1'))
@@ -283,17 +273,17 @@ def main():
 
     optimizer = chainer.optimizers.Adam()
     optimizer.setup(model)
-    optimizer.add_hook(chainer.optimizer.WeightDecay(1e-3))
+    optimizer.add_hook(chainer.optimizer.WeightDecay(args.weight_decay))
 
     dataset = chainer.datasets.TupleDataset(q1, q2, labels)
     train, test = chainer.datasets.split_dataset_random(dataset, int(len(labels) * 0.9), seed=SEED)
 
     train_iter = chainer.iterators.SerialIterator(train, args.batch)
-    test_iter = chainer.iterators.SerialIterator(test, args.batch,
+    test_iter = chainer.iterators.SerialIterator(test, 1024,
                                                  repeat=False, shuffle=False)
 
     updater = chainer.training.StandardUpdater(train_iter, optimizer, device=args.gpu)
-    trainer = chainer.training.Trainer(updater, (args.epoch, 'epoch'), out=args.out)
+    trainer = chainer.training.Trainer(updater, (args.epoch, 'epoch'), out=out_dir)
 
     eval_model = model.copy()  # Model with shared params and distinct states
     eval_rnn = eval_model.predictor
@@ -312,6 +302,12 @@ def main():
 
     if args.resume:
         chainer.serializers.load_npz(args.resume, trainer)
+    try:
+        os.makedirs(out_dir)
+    except OSError:
+        pass
+    with open(os.path.join(out_dir, 'parameters.json'), 'w') as pfile:
+        json.dump(vars(args), pfile)
 
     trainer.run()
 
