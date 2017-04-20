@@ -24,6 +24,8 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.pipeline import Pipeline
 from sklearn.metrics.pairwise import cosine_similarity
 
+import hunspell
+
 
 def common_words(x):
     q1, q2 = x
@@ -113,7 +115,7 @@ def preprocess_lsi(X, transformer):
     return ret, transformer
 
 
-punctuation='["\'?,\.]' # I will replace all these punctuation with ''
+punctuation='["\'?,\.‘’“”`…]' # I will replace all these punctuation with ''
 abbr_dict={
     "what's":"what is",
     "what're":"what are",
@@ -153,6 +155,14 @@ abbr_dict={
     "it'll":"it will",
     "they'll":"they will",
 
+    "i'd":"i would",
+    "we'd":"we would",
+    "you'd":"you would",
+    "he'd":"he would",
+    "she'd":"she would",
+    "it'd":"it would",
+    "they'd":"they would",
+
     "isn't":"is not",
     "wasn't":"was not",
     "aren't":"are not",
@@ -168,30 +178,33 @@ abbr_dict={
     "hasn't":"has not",
     "hadn't":"had not",
     "won't":"will not",
-    punctuation:'',
+
+    '[\'’`]s': '',
+    punctuation: '',
     '\s+':' ', # replace multi space with one single space
-
-
 }
+
+
+
+
 
 stop_words = ['the','a','an','and','but','if','or','because','as','what','which','this','that','these','those','then', 'just','so','than','such','both','through','about','for','is','of','while','during','to','What','Which', 'Is','If','While','This']
 
 def process_data(data):
-    stops = set(stopwords.words("english"))
-    stemmer = SnowballStemmer('english')
-    lemmatizer = WordNetLemmatizer()
-
-    def stem(text):
-        text = text.split()
-        stemmed_words = [word for word in text if word not in stops]
-        return " ".join(stemmed_words)
+    h_us = hunspell.HunSpell('/usr/share/hunspell/en_US.dic', '/usr/share/hunspell/en_US.aff')
+    def maybe_correct(words):
+        print(words)
+        w  = [ w if h_us.spell(w) else str(h_us.suggest(w) + [w])[0] for w in words]
+        print(w)
+        return ' '.join(w)
 
     data.question1 = data.question1.str.lower() # conver to lower case
     data.question2 = data.question2.str.lower()
     data.question1 = data.question1.astype(str)
     data.question2 = data.question2.astype(str)
     data.replace(abbr_dict,regex=True,inplace=True)
-    # data.question1 = data.question1.apply(stem)
-    # data.question2 = data.question2.apply(stem)
+    # data.question1 = data.question1.str.split().apply(maybe_correct)
+    # data.question2 = data.question2.str.split().apply(maybe_correct)
+
 
     return data
