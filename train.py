@@ -43,7 +43,7 @@ def disk_cache(cache_path):
 
 
 @disk_cache('.train.npy')
-def vectorize(data, maxlen=40):
+def vectorize(data, maxlen=50):
     tk = Tokenizer(nb_words=200000)
     tk.fit_on_texts(list(data.question1.values) + list(data.question2.values.astype(str)))
 
@@ -57,7 +57,7 @@ def vectorize(data, maxlen=40):
     return x1, x2, tk
 
 @disk_cache('.test.npy')
-def vectorize_with(tokenizer, data, maxlen=40):
+def vectorize_with(tokenizer, data, maxlen=50):
     tk = tokenizer
     x1 = tk.texts_to_sequences(data.question1.values.astype(str))
     x1 = pad_sequences(x1, maxlen=maxlen)
@@ -96,11 +96,11 @@ class SimpleModel(chainer.Chain):
                  dense_dropout):
         super().__init__(
             q_embed=L.LSTM(self.INPUT_DIM, lstm_units),
-            fc1=L.Linear(3 * lstm_units, dense_units),
+            fc1=L.Linear(2 * lstm_units, dense_units),
             fc2=L.Linear(dense_units, dense_units),
             fc3=L.Linear(dense_units, dense_units),
             fc4=L.Linear(dense_units, 2),
-            bn1=L.BatchNormalization(3 * lstm_units),
+            bn1=L.BatchNormalization(2 * lstm_units),
             bn2=L.BatchNormalization(dense_units),
             bn3=L.BatchNormalization(dense_units),
             bn4=L.BatchNormalization(dense_units),
@@ -116,17 +116,15 @@ class SimpleModel(chainer.Chain):
 
         self.q_embed.reset_state()
         seq_length = x1.shape[1]
-        q1_f = q1_b = q2_f = q2_b = None
         for step in range(seq_length):
-            q1_f = F.dropout(self.q_embed(x1[:, step, :]), self.lstm_dropout, self.train)
+            q1_f = self.q_embed(x1[:, step, :])
 
         self.q_embed.reset_state()
         for step in range(seq_length):
-            q2_f = F.dropout(self.q_embed(x2[:, step, :]), self.lstm_dropout, self.train)
+            q2_f = self.q_embed(x2[:, step, :])
 
         x = F.concat([
             F.absolute(q1_f - q2_f),
-            F.normalize(q1_f - q2_f),
             q1_f * q2_f], axis=1)
         x = self.fc1(F.dropout(F.relu(self.bn1(x, not self.train)), self.dense_dropout, self.train))
         x = self.fc2(F.dropout(F.relu(self.bn2(x, not self.train)), self.dense_dropout, self.train))
@@ -166,7 +164,7 @@ def parse_args():
     parser.add_argument('--epoch', '-e', type=int, default=10)
     parser.add_argument('--lstm',  type=int, default=150)
     parser.add_argument('--dense',  type=int, default=100)
-    parser.add_argument('--lstm_dropout',  type=float, default=0.15)
+    parser.add_argument('--lstm_dropout',  type=float, default=0.0)
     parser.add_argument('--dense_dropout',  type=float, default=0.15)
     parser.add_argument('--weight_decay',  type=float, default=1e-4)
     parser.add_argument('--desc',  type=str)
@@ -181,6 +179,7 @@ def parse_args():
 def main():
     args = parse_args()
     np.random.seed(SEED)
+    chainer.cuda.cupy.random.seed(SEED)
     out_dir = os.path.join(args.out, datetime.datetime.now().strftime('%m-%d-%H-%M'))
 
     data = process_data(pd.read_csv(args.train, encoding='utf-8'))
@@ -217,6 +216,7 @@ def main():
             bq2 = chainer.cuda.to_gpu(q2[pos:pos+batch_size], device=args.gpu)
 
             preds = F.softmax(model.predictor(bq1, bq2))[:, 1].data.get()
+            # XXX: Replace 0.165 with 0.173?
             a, b = 0.165 / 0.37, (1 - 0.165) / (1 - 0.37)
             predicted[pos:pos+batch_size] = preds if not args.reweight else  a*preds / (a*preds + b*(1-preds))
 
