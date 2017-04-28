@@ -90,20 +90,34 @@ def embedding_matrix(path, vocabulary):
     return embedding_matrix
 
 
+class Layer(chainer.Chain):
+    def __init__(self, in_size, out_size, rate):
+        super().__init__(fc=L.Linear(in_size, out_size), bn=L.BatchNormalization(in_size), fn=L.PReLU())
+        self.rate = rate
+    def __call__(self, x, train=True):
+        return self.fc(F.dropout(self.fn(self.bn(x, not train)), self.rate, train))
+
+class Layers(chainer.ChainList):
+    def __init__(self, in_size, size, out_size, layers_num, rate, fn=F.relu):
+        assert layers_num >= 2
+        layer1 = Layer(in_size, size, rate)
+        layerN = Layer(size, out_size, rate)
+        layers = [Layer(size, size, rate) for _ in range(layers_num - 2)]
+        super().__init__(layer1, *layers, layerN)
+
+    def __call__(self, x, train):
+        for layer in self:
+            x = layer(x, train)
+        return x
+
+
 class SimpleModel(chainer.Chain):
     INPUT_DIM = 300
     def __init__(self, vocab_size, lstm_units, dense_units, lstm_dropout,
                  dense_dropout):
         super().__init__(
-            q_embed=L.LSTM(self.INPUT_DIM, lstm_units),
-            fc1=L.Linear(2 * lstm_units, dense_units),
-            fc2=L.Linear(dense_units, dense_units),
-            fc3=L.Linear(dense_units, dense_units),
-            fc4=L.Linear(dense_units, 2),
-            bn1=L.BatchNormalization(2 * lstm_units),
-            bn2=L.BatchNormalization(dense_units),
-            bn3=L.BatchNormalization(dense_units),
-            bn4=L.BatchNormalization(dense_units),
+            q_embed=L.StatefulGRU(self.INPUT_DIM, lstm_units),
+            layers=Layers(2 * lstm_units, dense_units, 2, 4, dense_dropout),
         )
         self.embed = L.EmbedID(vocab_size, self.INPUT_DIM)
         self.lstm_dropout = lstm_dropout
@@ -123,14 +137,11 @@ class SimpleModel(chainer.Chain):
         for step in range(seq_length):
             q2_f = self.q_embed(x2[:, step, :])
 
-        x = F.concat([
-            F.absolute(q1_f - q2_f),
-            q1_f * q2_f], axis=1)
-        x = self.fc1(F.dropout(F.relu(self.bn1(x, not self.train)), self.dense_dropout, self.train))
-        x = self.fc2(F.dropout(F.relu(self.bn2(x, not self.train)), self.dense_dropout, self.train))
-        x = self.fc3(F.dropout(F.relu(self.bn3(x, not self.train)), self.dense_dropout, self.train))
-        x = self.fc4(F.dropout(F.relu(self.bn4(x, not self.train)), self.dense_dropout, self.train))
+        x1 = F.absolute(q1_f - q2_f)
+        x2 = q1_f * q2_f
 
+        x = F.concat([x1, x2])
+        x = self.layers(x, self.train)
         return x
 
 class PandasWrapper(DatasetMixin):
@@ -164,7 +175,7 @@ def parse_args():
     parser.add_argument('--epoch', '-e', type=int, default=10)
     parser.add_argument('--lstm',  type=int, default=150)
     parser.add_argument('--dense',  type=int, default=100)
-    parser.add_argument('--lstm_dropout',  type=float, default=0.0)
+    parser.add_argument('--lstm_dropout',  type=float, default=0.15)
     parser.add_argument('--dense_dropout',  type=float, default=0.15)
     parser.add_argument('--weight_decay',  type=float, default=1e-4)
     parser.add_argument('--desc',  type=str)
